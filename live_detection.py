@@ -4,7 +4,7 @@ import numpy as np
 import math
 
 # Open the default camera
-camera = cv2.VideoCapture(0)
+camera = cv2.VideoCapture(1)
 
 # Check if the camera opened successfully
 if not camera.isOpened():

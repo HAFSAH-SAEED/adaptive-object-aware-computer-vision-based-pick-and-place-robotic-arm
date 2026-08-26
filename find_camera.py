@@ -1,6 +1,6 @@
 import cv2
 
-camera = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+camera = cv2.VideoCapture(1)
 
 if not camera.isOpened():
     print("Could not open Camera 1.")
