@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import os
-import time
 
 # =========================================================
 # SETTINGS
@@ -14,11 +13,9 @@ LABEL_DIR = "yolo_dataset/labels"
 
 MIN_AREA = 300
 
-SAVE_INTERVAL = 1.0
-
 
 # =========================================================
-# CREATE FOLDERS
+# CREATE DATASET FOLDERS
 # =========================================================
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
@@ -26,7 +23,7 @@ os.makedirs(LABEL_DIR, exist_ok=True)
 
 
 # =========================================================
-# CAMERA
+# OPEN CAMERA
 # =========================================================
 
 camera = cv2.VideoCapture(CAMERA_ID)
@@ -35,18 +32,23 @@ if not camera.isOpened():
     print("Could not open iPhone camera.")
     exit()
 
+# Force 640x480
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
 print("iPhone camera opened successfully!")
 
 
 # =========================================================
 # WORKSPACE
+# Current camera resolution = 640 x 480
 # =========================================================
 
 workspace_points = np.array([
-    [79, 117],
-    [284, 114],
-    [287, 376],
-    [83, 369]
+    [92, 72],      # Top-left
+    [350, 70],     # Top-right
+    [354, 391],    # Bottom-right
+    [97, 394]      # Bottom-left
 ], dtype=np.int32)
 
 
@@ -61,13 +63,11 @@ upper_red_1 = np.array([10, 255, 255])
 lower_red_2 = np.array([170, 100, 80])
 upper_red_2 = np.array([179, 255, 255])
 
-
 # BLUE
 lower_blue = np.array([90, 80, 50])
 upper_blue = np.array([140, 255, 255])
 
-
-# LIGHT GREEN
+# GREEN
 lower_green = np.array([35, 35, 140])
 upper_green = np.array([90, 255, 255])
 
@@ -84,7 +84,7 @@ CLASS_IDS = {
 
 
 # =========================================================
-# CHECK WORKSPACE
+# CHECK IF CENTROID IS INSIDE WORKSPACE
 # =========================================================
 
 def inside_workspace(cx, cy):
@@ -99,7 +99,7 @@ def inside_workspace(cx, cy):
 
 
 # =========================================================
-# DETECT ONE OBJECT PER COLOR
+# DETECT OBJECTS
 # =========================================================
 
 def detect_objects(frame):
@@ -109,12 +109,9 @@ def detect_objects(frame):
         cv2.COLOR_BGR2HSV
     )
 
-
-    # =====================================================
-    # COLOR MASKS
-    # =====================================================
-
-    # RED
+    # -----------------------------------------------------
+    # RED MASK
+    # -----------------------------------------------------
 
     red_1 = cv2.inRange(
         hsv,
@@ -133,8 +130,9 @@ def detect_objects(frame):
         red_2
     )
 
-
-    # BLUE
+    # -----------------------------------------------------
+    # BLUE MASK
+    # -----------------------------------------------------
 
     blue_mask = cv2.inRange(
         hsv,
@@ -142,8 +140,9 @@ def detect_objects(frame):
         upper_blue
     )
 
-
-    # GREEN
+    # -----------------------------------------------------
+    # GREEN MASK
+    # -----------------------------------------------------
 
     green_mask = cv2.inRange(
         hsv,
@@ -151,16 +150,13 @@ def detect_objects(frame):
         upper_green
     )
 
-
     masks = {
         "RED": red_mask,
         "BLUE": blue_mask,
         "GREEN": green_mask
     }
 
-
     detections = []
-
 
     # =====================================================
     # PROCESS EACH COLOR
@@ -173,21 +169,19 @@ def detect_objects(frame):
             np.uint8
         )
 
-
-        # Clean noise
+        # Remove noise
         mask = cv2.morphologyEx(
             mask,
             cv2.MORPH_OPEN,
             kernel
         )
 
-
+        # Close small gaps
         mask = cv2.morphologyEx(
             mask,
             cv2.MORPH_CLOSE,
             kernel
         )
-
 
         # Find contours
         contours, _ = cv2.findContours(
@@ -196,12 +190,11 @@ def detect_objects(frame):
             cv2.CHAIN_APPROX_SIMPLE
         )
 
-
-        # =================================================
-        # KEEP ONLY VALID CONTOURS
-        # =================================================
-
         valid_contours = []
+
+        # -------------------------------------------------
+        # FILTER CONTOURS
+        # -------------------------------------------------
 
         for contour in contours:
 
@@ -212,14 +205,12 @@ def detect_objects(frame):
             if area < MIN_AREA:
                 continue
 
-
             M = cv2.moments(
                 contour
             )
 
             if M["m00"] == 0:
                 continue
-
 
             cx = int(
                 M["m10"] / M["m00"]
@@ -229,43 +220,35 @@ def detect_objects(frame):
                 M["m01"] / M["m00"]
             )
 
-
-            # Only keep objects inside workspace
+            # Workspace filter
             if not inside_workspace(
                 cx,
                 cy
             ):
                 continue
 
-
             valid_contours.append(
                 contour
             )
 
-
-        # =================================================
-        # KEEP ONLY LARGEST OBJECT
-        # =================================================
+        # -------------------------------------------------
+        # ONLY LARGEST OBJECT OF EACH COLOR
+        # -------------------------------------------------
 
         if len(valid_contours) == 0:
             continue
-
 
         largest_contour = max(
             valid_contours,
             key=cv2.contourArea
         )
 
-
         # Bounding box
-
         x, y, w, h = cv2.boundingRect(
             largest_contour
         )
 
-
         # Centroid
-
         M = cv2.moments(
             largest_contour
         )
@@ -278,7 +261,6 @@ def detect_objects(frame):
             M["m01"] / M["m00"]
         )
 
-
         detections.append({
             "class_id": CLASS_IDS[color_name],
             "color": color_name,
@@ -289,7 +271,6 @@ def detect_objects(frame):
             "cx": cx,
             "cy": cy
         })
-
 
     return detections
 
@@ -319,9 +300,7 @@ def save_yolo_label(
             w = detection["w"]
             h = detection["h"]
 
-
-            # YOLO normalized center coordinates
-
+            # YOLO normalized center
             center_x = (
                 x + w / 2
             ) / image_width
@@ -330,9 +309,7 @@ def save_yolo_label(
                 y + h / 2
             ) / image_height
 
-
             # YOLO normalized dimensions
-
             width = (
                 w / image_width
             )
@@ -340,7 +317,6 @@ def save_yolo_label(
             height = (
                 h / image_height
             )
-
 
             file.write(
                 f"{class_id} "
@@ -352,36 +328,28 @@ def save_yolo_label(
 
 
 # =========================================================
-# MAIN
+# MAIN LOOP
 # =========================================================
 
 image_count = 0
 
-last_save_time = 0
-
-
 print()
 print("========================================")
-print("CLEAN YOLO DATASET COLLECTION")
+print("MANUAL YOLO DATASET COLLECTION")
 print("========================================")
 print()
-print("Classes:")
-print("0 = RED")
-print("1 = BLUE")
-print("2 = GREEN")
+print("RED   = Class 0")
+print("BLUE  = Class 1")
+print("GREEN = Class 2")
 print()
-print("Only the largest valid object")
-print("of each color will be labelled.")
+print("SPACE = Capture")
+print("Q     = Quit")
 print()
-print("Start with 5 test images.")
-print()
-print("Press Q to quit.")
+print("Move objects to a new position.")
+print("Remove your hand.")
+print("Press SPACE when the frame is clean.")
 print()
 
-
-# =========================================================
-# LOOP
-# =========================================================
 
 while True:
 
@@ -391,7 +359,6 @@ while True:
         print("Could not read camera frame.")
         break
 
-
     # =====================================================
     # DETECT
     # =====================================================
@@ -400,97 +367,26 @@ while True:
         frame
     )
 
-
     # =====================================================
-    # SAVE CLEAN ORIGINAL FRAME
-    #
-    # IMPORTANT:
-    # We save BEFORE drawing boxes/text.
+    # CREATE DISPLAY COPY
     # =====================================================
 
-    current_time = time.time()
-
-    if (
-        current_time - last_save_time
-        >= SAVE_INTERVAL
-    ):
-
-        if len(detections) > 0:
-
-            image_count += 1
-
-
-            image_name = (
-                f"image_{image_count:04d}.jpg"
-            )
-
-            label_name = (
-                f"image_{image_count:04d}.txt"
-            )
-
-
-            image_path = os.path.join(
-                IMAGE_DIR,
-                image_name
-            )
-
-            label_path = os.path.join(
-                LABEL_DIR,
-                label_name
-            )
-
-
-            # ---------------------------------------------
-            # SAVE CLEAN IMAGE
-            # ---------------------------------------------
-
-            cv2.imwrite(
-                image_path,
-                frame
-            )
-
-
-            # ---------------------------------------------
-            # SAVE LABELS
-            # ---------------------------------------------
-
-            image_height, image_width = (
-                frame.shape[:2]
-            )
-
-
-            save_yolo_label(
-                label_path,
-                detections,
-                image_width,
-                image_height
-            )
-
-
-            print(
-                f"Saved image {image_count} | "
-                f"Objects: {len(detections)}"
-            )
-
-
-            last_save_time = current_time
-
+    display_frame = frame.copy()
 
     # =====================================================
-    # DRAW WORKSPACE FOR DISPLAY ONLY
+    # DRAW WORKSPACE
     # =====================================================
 
     cv2.polylines(
-        frame,
+        display_frame,
         [workspace_points],
         True,
         (255, 0, 255),
         2
     )
 
-
     # =====================================================
-    # DRAW DETECTIONS FOR DISPLAY ONLY
+    # DRAW DETECTIONS
     # =====================================================
 
     for detection in detections:
@@ -505,27 +401,27 @@ while True:
 
         color_name = detection["color"]
 
-
+        # Bounding box
         cv2.rectangle(
-            frame,
+            display_frame,
             (x, y),
             (x + w, y + h),
             (0, 255, 0),
             2
         )
 
-
+        # Centroid
         cv2.circle(
-            frame,
+            display_frame,
             (cx, cy),
             5,
             (0, 0, 255),
             -1
         )
 
-
+        # Color name
         cv2.putText(
-            frame,
+            display_frame,
             color_name,
             (x, max(y - 10, 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -534,59 +430,119 @@ while True:
             2
         )
 
-
     # =====================================================
-    # DISPLAY INFO
+    # DISPLAY INFORMATION
     # =====================================================
 
     cv2.putText(
-        frame,
-        f"Images saved: {image_count}",
-        (20, 35),
+        display_frame,
+        f"Objects detected: {len(detections)}",
+        (15, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.75,
+        0.65,
         (0, 0, 0),
         2
     )
 
-
     cv2.putText(
-        frame,
-        "Move objects to different positions",
-        (20, 65),
+        display_frame,
+        f"Images saved: {image_count}",
+        (15, 60),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
+        0.6,
         (0, 0, 0),
-        1
+        2
     )
 
-
     cv2.putText(
-        frame,
-        "Q = Quit",
-        (20, 90),
+        display_frame,
+        "SPACE = Capture | Q = Quit",
+        (15, 90),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
+        0.55,
         (0, 0, 0),
-        1
+        2
     )
-
 
     # =====================================================
     # SHOW
     # =====================================================
 
     cv2.imshow(
-        "Clean YOLO Dataset Collection",
-        frame
+        "Manual YOLO Dataset Collection",
+        display_frame
     )
 
+    # =====================================================
+    # KEY
+    # =====================================================
+
+    key = cv2.waitKey(1) & 0xFF
 
     # =====================================================
-    # QUIT
+    # SPACE = CAPTURE
     # =====================================================
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+    if key == 32:
+
+        if len(detections) == 0:
+
+            print(
+                "No valid objects detected. "
+                "Image NOT saved."
+            )
+
+            continue
+
+        image_count += 1
+
+        image_name = (
+            f"image_{image_count:04d}.jpg"
+        )
+
+        label_name = (
+            f"image_{image_count:04d}.txt"
+        )
+
+        image_path = os.path.join(
+            IMAGE_DIR,
+            image_name
+        )
+
+        label_path = os.path.join(
+            LABEL_DIR,
+            label_name
+        )
+
+        # IMPORTANT:
+        # Save CLEAN frame, not display_frame
+        cv2.imwrite(
+            image_path,
+            frame
+        )
+
+        image_height, image_width = (
+            frame.shape[:2]
+        )
+
+        save_yolo_label(
+            label_path,
+            detections,
+            image_width,
+            image_height
+        )
+
+        print(
+            f"Captured image {image_count} | "
+            f"Objects: {len(detections)}"
+        )
+
+    # =====================================================
+    # Q = QUIT
+    # =====================================================
+
+    elif key == ord("q"):
+
         break
 
 
@@ -597,7 +553,6 @@ while True:
 camera.release()
 
 cv2.destroyAllWindows()
-
 
 print()
 print("========================================")
