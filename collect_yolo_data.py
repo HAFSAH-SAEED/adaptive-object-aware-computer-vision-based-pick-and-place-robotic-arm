@@ -32,7 +32,6 @@ if not camera.isOpened():
     print("Could not open iPhone camera.")
     exit()
 
-# Force 640x480
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -40,15 +39,17 @@ print("iPhone camera opened successfully!")
 
 
 # =========================================================
-# WORKSPACE
-# Current camera resolution = 640 x 480
+# CURRENT CALIBRATED WORKSPACE
+# 640 x 480 camera
+#
+# These are the SAME points selected in calibrate.py
 # =========================================================
 
 workspace_points = np.array([
-    [92, 72],      # Top-left
-    [350, 70],     # Top-right
-    [354, 391],    # Bottom-right
-    [97, 394]      # Bottom-left
+    [54, 86],      # P1 - TOP LEFT
+    [266, 89],     # P2 - TOP RIGHT
+    [266, 343],    # P3 - BOTTOM RIGHT
+    [59, 345]      # P4 - BOTTOM LEFT
 ], dtype=np.int32)
 
 
@@ -63,9 +64,11 @@ upper_red_1 = np.array([10, 255, 255])
 lower_red_2 = np.array([170, 100, 80])
 upper_red_2 = np.array([179, 255, 255])
 
+
 # BLUE
 lower_blue = np.array([90, 80, 50])
 upper_blue = np.array([140, 255, 255])
+
 
 # GREEN
 lower_green = np.array([35, 35, 140])
@@ -84,7 +87,7 @@ CLASS_IDS = {
 
 
 # =========================================================
-# CHECK IF CENTROID IS INSIDE WORKSPACE
+# CHECK IF POINT IS INSIDE WORKSPACE
 # =========================================================
 
 def inside_workspace(cx, cy):
@@ -99,7 +102,7 @@ def inside_workspace(cx, cy):
 
 
 # =========================================================
-# DETECT OBJECTS
+# DETECT RED / BLUE / GREEN
 # =========================================================
 
 def detect_objects(frame):
@@ -110,7 +113,7 @@ def detect_objects(frame):
     )
 
     # -----------------------------------------------------
-    # RED MASK
+    # RED
     # -----------------------------------------------------
 
     red_1 = cv2.inRange(
@@ -130,8 +133,9 @@ def detect_objects(frame):
         red_2
     )
 
+
     # -----------------------------------------------------
-    # BLUE MASK
+    # BLUE
     # -----------------------------------------------------
 
     blue_mask = cv2.inRange(
@@ -140,8 +144,9 @@ def detect_objects(frame):
         upper_blue
     )
 
+
     # -----------------------------------------------------
-    # GREEN MASK
+    # GREEN
     # -----------------------------------------------------
 
     green_mask = cv2.inRange(
@@ -150,13 +155,16 @@ def detect_objects(frame):
         upper_green
     )
 
+
     masks = {
         "RED": red_mask,
         "BLUE": blue_mask,
         "GREEN": green_mask
     }
 
+
     detections = []
+
 
     # =====================================================
     # PROCESS EACH COLOR
@@ -169,6 +177,7 @@ def detect_objects(frame):
             np.uint8
         )
 
+
         # Remove noise
         mask = cv2.morphologyEx(
             mask,
@@ -176,12 +185,14 @@ def detect_objects(frame):
             kernel
         )
 
-        # Close small gaps
+
+        # Close gaps
         mask = cv2.morphologyEx(
             mask,
             cv2.MORPH_CLOSE,
             kernel
         )
+
 
         # Find contours
         contours, _ = cv2.findContours(
@@ -190,11 +201,13 @@ def detect_objects(frame):
             cv2.CHAIN_APPROX_SIMPLE
         )
 
+
         valid_contours = []
 
-        # -------------------------------------------------
+
+        # =================================================
         # FILTER CONTOURS
-        # -------------------------------------------------
+        # =================================================
 
         for contour in contours:
 
@@ -205,12 +218,14 @@ def detect_objects(frame):
             if area < MIN_AREA:
                 continue
 
+
             M = cv2.moments(
                 contour
             )
 
             if M["m00"] == 0:
                 continue
+
 
             cx = int(
                 M["m10"] / M["m00"]
@@ -220,33 +235,39 @@ def detect_objects(frame):
                 M["m01"] / M["m00"]
             )
 
-            # Workspace filter
+
+            # Only accept objects inside workspace
             if not inside_workspace(
                 cx,
                 cy
             ):
                 continue
 
+
             valid_contours.append(
                 contour
             )
 
-        # -------------------------------------------------
-        # ONLY LARGEST OBJECT OF EACH COLOR
-        # -------------------------------------------------
+
+        # =================================================
+        # KEEP LARGEST OBJECT OF THIS COLOR
+        # =================================================
 
         if len(valid_contours) == 0:
             continue
+
 
         largest_contour = max(
             valid_contours,
             key=cv2.contourArea
         )
 
+
         # Bounding box
         x, y, w, h = cv2.boundingRect(
             largest_contour
         )
+
 
         # Centroid
         M = cv2.moments(
@@ -261,6 +282,7 @@ def detect_objects(frame):
             M["m01"] / M["m00"]
         )
 
+
         detections.append({
             "class_id": CLASS_IDS[color_name],
             "color": color_name,
@@ -271,6 +293,7 @@ def detect_objects(frame):
             "cx": cx,
             "cy": cy
         })
+
 
     return detections
 
@@ -300,6 +323,7 @@ def save_yolo_label(
             w = detection["w"]
             h = detection["h"]
 
+
             # YOLO normalized center
             center_x = (
                 x + w / 2
@@ -309,7 +333,8 @@ def save_yolo_label(
                 y + h / 2
             ) / image_height
 
-            # YOLO normalized dimensions
+
+            # YOLO normalized width/height
             width = (
                 w / image_width
             )
@@ -317,6 +342,7 @@ def save_yolo_label(
             height = (
                 h / image_height
             )
+
 
             file.write(
                 f"{class_id} "
@@ -328,10 +354,11 @@ def save_yolo_label(
 
 
 # =========================================================
-# MAIN LOOP
+# MAIN
 # =========================================================
 
 image_count = 0
+
 
 print()
 print("========================================")
@@ -342,36 +369,49 @@ print("RED   = Class 0")
 print("BLUE  = Class 1")
 print("GREEN = Class 2")
 print()
-print("SPACE = Capture")
+print("SPACE = Capture image")
 print("Q     = Quit")
 print()
 print("Move objects to a new position.")
 print("Remove your hand.")
-print("Press SPACE when the frame is clean.")
+print("Press SPACE when ready.")
 print()
 
+
+# =========================================================
+# CAMERA LOOP
+# =========================================================
 
 while True:
 
     success, frame = camera.read()
 
     if not success:
-        print("Could not read camera frame.")
+
+        print(
+            "Could not read camera frame."
+        )
+
         break
 
+
     # =====================================================
-    # DETECT
+    # DETECT OBJECTS
     # =====================================================
 
     detections = detect_objects(
         frame
     )
 
+
     # =====================================================
-    # CREATE DISPLAY COPY
+    # DISPLAY COPY
+    #
+    # Original frame stays untouched.
     # =====================================================
 
     display_frame = frame.copy()
+
 
     # =====================================================
     # DRAW WORKSPACE
@@ -385,8 +425,9 @@ while True:
         2
     )
 
+
     # =====================================================
-    # DRAW DETECTIONS
+    # DRAW OBJECTS
     # =====================================================
 
     for detection in detections:
@@ -401,6 +442,7 @@ while True:
 
         color_name = detection["color"]
 
+
         # Bounding box
         cv2.rectangle(
             display_frame,
@@ -409,6 +451,7 @@ while True:
             (0, 255, 0),
             2
         )
+
 
         # Centroid
         cv2.circle(
@@ -419,7 +462,8 @@ while True:
             -1
         )
 
-        # Color name
+
+        # Object name
         cv2.putText(
             display_frame,
             color_name,
@@ -430,8 +474,9 @@ while True:
             2
         )
 
+
     # =====================================================
-    # DISPLAY INFORMATION
+    # INFORMATION
     # =====================================================
 
     cv2.putText(
@@ -444,6 +489,7 @@ while True:
         2
     )
 
+
     cv2.putText(
         display_frame,
         f"Images saved: {image_count}",
@@ -453,6 +499,7 @@ while True:
         (0, 0, 0),
         2
     )
+
 
     cv2.putText(
         display_frame,
@@ -464,6 +511,7 @@ while True:
         2
     )
 
+
     # =====================================================
     # SHOW
     # =====================================================
@@ -473,11 +521,13 @@ while True:
         display_frame
     )
 
+
     # =====================================================
-    # KEY
+    # KEYBOARD
     # =====================================================
 
     key = cv2.waitKey(1) & 0xFF
+
 
     # =====================================================
     # SPACE = CAPTURE
@@ -485,6 +535,7 @@ while True:
 
     if key == 32:
 
+        # Need at least one object
         if len(detections) == 0:
 
             print(
@@ -494,7 +545,13 @@ while True:
 
             continue
 
+
+        # -------------------------------------------------
+        # IMAGE NUMBER
+        # -------------------------------------------------
+
         image_count += 1
+
 
         image_name = (
             f"image_{image_count:04d}.jpg"
@@ -503,6 +560,7 @@ while True:
         label_name = (
             f"image_{image_count:04d}.txt"
         )
+
 
         image_path = os.path.join(
             IMAGE_DIR,
@@ -514,16 +572,25 @@ while True:
             label_name
         )
 
-        # IMPORTANT:
-        # Save CLEAN frame, not display_frame
+
+        # -------------------------------------------------
+        # SAVE CLEAN IMAGE
+        # -------------------------------------------------
+
         cv2.imwrite(
             image_path,
             frame
         )
 
+
+        # -------------------------------------------------
+        # SAVE YOLO LABEL
+        # -------------------------------------------------
+
         image_height, image_width = (
             frame.shape[:2]
         )
+
 
         save_yolo_label(
             label_path,
@@ -532,10 +599,23 @@ while True:
             image_height
         )
 
+
+        # -------------------------------------------------
+        # PRINT RESULT
+        # -------------------------------------------------
+
+        detected_colors = [
+            detection["color"]
+            for detection in detections
+        ]
+
+
         print(
             f"Captured image {image_count} | "
-            f"Objects: {len(detections)}"
+            f"Objects: {len(detections)} | "
+            f"Colors: {detected_colors}"
         )
+
 
     # =====================================================
     # Q = QUIT
@@ -554,10 +634,19 @@ camera.release()
 
 cv2.destroyAllWindows()
 
+
 print()
 print("========================================")
 print("DATASET COLLECTION FINISHED")
 print("========================================")
-print(f"Images saved: {image_count}")
-print(f"Images folder: {IMAGE_DIR}")
-print(f"Labels folder: {LABEL_DIR}")
+print(
+    f"Images saved: {image_count}"
+)
+
+print(
+    f"Images folder: {IMAGE_DIR}"
+)
+
+print(
+    f"Labels folder: {LABEL_DIR}"
+)
