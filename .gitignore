@@ -5,12 +5,10 @@ __pycache__/
 .env
 iphone_stream_test.py
 
-# YOLO dataset
-yolo_dataset/
-
 # YOLO training outputs
 runs/
-*.pt
 
 # Local calibration
 calibration_data.npz
+# YOLO cache files
+*.cache

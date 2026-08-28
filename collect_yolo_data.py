@@ -11,6 +11,8 @@ CAMERA_ID = 1
 IMAGE_DIR = "yolo_dataset/images"
 LABEL_DIR = "yolo_dataset/labels"
 
+CALIBRATION_FILE = "calibration_data.npz"
+
 MIN_AREA = 300
 
 
@@ -23,6 +25,61 @@ os.makedirs(LABEL_DIR, exist_ok=True)
 
 
 # =========================================================
+# LOAD CALIBRATION
+# =========================================================
+
+if not os.path.exists(CALIBRATION_FILE):
+    print("ERROR: calibration_data.npz not found.")
+    print("Run calibrate.py first.")
+    exit()
+
+calibration = np.load(CALIBRATION_FILE)
+
+print("Calibration file loaded.")
+
+print("Available calibration data:")
+print(calibration.files)
+
+
+# =========================================================
+# GET WORKSPACE POINTS
+# =========================================================
+
+# The calibration file should contain the image points.
+# We support the name used by our calibration script.
+
+if "image_points" in calibration.files:
+
+    workspace_points = calibration["image_points"]
+
+elif "image_pts" in calibration.files:
+
+    workspace_points = calibration["image_pts"]
+
+else:
+
+    print()
+    print("ERROR: Workspace points were not found")
+    print("inside calibration_data.npz.")
+    print()
+    print("Available keys:")
+    print(calibration.files)
+    exit()
+
+
+# Convert to OpenCV integer format
+workspace_points = np.array(
+    workspace_points,
+    dtype=np.int32
+).reshape(-1, 2)
+
+
+print()
+print("Workspace points loaded from calibration:")
+print(workspace_points)
+
+
+# =========================================================
 # OPEN CAMERA
 # =========================================================
 
@@ -32,25 +89,18 @@ if not camera.isOpened():
     print("Could not open iPhone camera.")
     exit()
 
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+camera.set(
+    cv2.CAP_PROP_FRAME_WIDTH,
+    640
+)
 
+camera.set(
+    cv2.CAP_PROP_FRAME_HEIGHT,
+    480
+)
+
+print()
 print("iPhone camera opened successfully!")
-
-
-# =========================================================
-# CURRENT CALIBRATED WORKSPACE
-# 640 x 480 camera
-#
-# These are the SAME points selected in calibrate.py
-# =========================================================
-
-workspace_points = np.array([
-    [54, 86],      # P1 - TOP LEFT
-    [266, 89],     # P2 - TOP RIGHT
-    [266, 343],    # P3 - BOTTOM RIGHT
-    [59, 345]      # P4 - BOTTOM LEFT
-], dtype=np.int32)
 
 
 # =========================================================
@@ -87,7 +137,7 @@ CLASS_IDS = {
 
 
 # =========================================================
-# CHECK IF POINT IS INSIDE WORKSPACE
+# CHECK WORKSPACE
 # =========================================================
 
 def inside_workspace(cx, cy):
@@ -102,7 +152,7 @@ def inside_workspace(cx, cy):
 
 
 # =========================================================
-# DETECT RED / BLUE / GREEN
+# DETECT OBJECTS
 # =========================================================
 
 def detect_objects(frame):
@@ -167,7 +217,7 @@ def detect_objects(frame):
 
 
     # =====================================================
-    # PROCESS EACH COLOR
+    # PROCESS COLORS
     # =====================================================
 
     for color_name, mask in masks.items():
@@ -205,9 +255,9 @@ def detect_objects(frame):
         valid_contours = []
 
 
-        # =================================================
+        # -------------------------------------------------
         # FILTER CONTOURS
-        # =================================================
+        # -------------------------------------------------
 
         for contour in contours:
 
@@ -236,7 +286,7 @@ def detect_objects(frame):
             )
 
 
-            # Only accept objects inside workspace
+            # Workspace filter
             if not inside_workspace(
                 cx,
                 cy
@@ -249,9 +299,9 @@ def detect_objects(frame):
             )
 
 
-        # =================================================
-        # KEEP LARGEST OBJECT OF THIS COLOR
-        # =================================================
+        # -------------------------------------------------
+        # KEEP LARGEST OBJECT OF EACH COLOR
+        # -------------------------------------------------
 
         if len(valid_contours) == 0:
             continue
@@ -273,6 +323,7 @@ def detect_objects(frame):
         M = cv2.moments(
             largest_contour
         )
+
 
         cx = int(
             M["m10"] / M["m00"]
@@ -334,7 +385,7 @@ def save_yolo_label(
             ) / image_height
 
 
-            # YOLO normalized width/height
+            # YOLO normalized size
             width = (
                 w / image_width
             )
@@ -354,11 +405,54 @@ def save_yolo_label(
 
 
 # =========================================================
-# MAIN
+# FIND EXISTING IMAGE COUNT
+#
+# This prevents overwriting when we press Q and restart.
 # =========================================================
 
-image_count = 0
+existing_images = [
+    f
+    for f in os.listdir(IMAGE_DIR)
+    if f.lower().endswith(".jpg")
+]
 
+
+image_numbers = []
+
+
+for filename in existing_images:
+
+    try:
+
+        number = int(
+            filename.replace(
+                "image_", ""
+            ).replace(
+                ".jpg", ""
+            )
+        )
+
+        image_numbers.append(number)
+
+    except ValueError:
+
+        pass
+
+
+if len(image_numbers) > 0:
+
+    image_count = max(
+        image_numbers
+    )
+
+else:
+
+    image_count = 0
+
+
+# =========================================================
+# START
+# =========================================================
 
 print()
 print("========================================")
@@ -369,17 +463,19 @@ print("RED   = Class 0")
 print("BLUE  = Class 1")
 print("GREEN = Class 2")
 print()
-print("SPACE = Capture image")
+print(f"Starting image number: {image_count + 1}")
+print()
+print("SPACE = Capture")
 print("Q     = Quit")
 print()
-print("Move objects to a new position.")
+print("Move objects.")
 print("Remove your hand.")
 print("Press SPACE when ready.")
 print()
 
 
 # =========================================================
-# CAMERA LOOP
+# MAIN LOOP
 # =========================================================
 
 while True:
@@ -396,7 +492,7 @@ while True:
 
 
     # =====================================================
-    # DETECT OBJECTS
+    # DETECT
     # =====================================================
 
     detections = detect_objects(
@@ -406,15 +502,13 @@ while True:
 
     # =====================================================
     # DISPLAY COPY
-    #
-    # Original frame stays untouched.
     # =====================================================
 
     display_frame = frame.copy()
 
 
     # =====================================================
-    # DRAW WORKSPACE
+    # DRAW CALIBRATED WORKSPACE
     # =====================================================
 
     cv2.polylines(
@@ -427,7 +521,7 @@ while True:
 
 
     # =====================================================
-    # DRAW OBJECTS
+    # DRAW DETECTIONS
     # =====================================================
 
     for detection in detections:
@@ -463,7 +557,7 @@ while True:
         )
 
 
-        # Object name
+        # Color label
         cv2.putText(
             display_frame,
             color_name,
@@ -535,7 +629,6 @@ while True:
 
     if key == 32:
 
-        # Need at least one object
         if len(detections) == 0:
 
             print(
@@ -547,7 +640,7 @@ while True:
 
 
         # -------------------------------------------------
-        # IMAGE NUMBER
+        # NEXT IMAGE NUMBER
         # -------------------------------------------------
 
         image_count += 1
