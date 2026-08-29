@@ -189,6 +189,6 @@ Future improvements include:
 
 ## Author
 
-**Designed and developed by Hafsa Saeed, Computer Engineering student at NUST.**
+**Designed and developed by Hafsah Saeed, Computer Engineering student at NUST.**
 
 *Turning computer vision into real-world robotic intelligence.*
