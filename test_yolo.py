@@ -12,12 +12,13 @@ MODEL_PATH = "models/best.pt"
 CALIBRATION_FILE = "calibration_data.npz"
 
 CAMERA_ID = 1
+
 CONFIDENCE = 0.5
 
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
-PANEL_WIDTH = 330
+PANEL_WIDTH = 360
 
 
 # =========================================================
@@ -32,11 +33,12 @@ print("YOLO model loaded successfully.")
 
 
 # =========================================================
-# LOAD LATEST CALIBRATION
+# LOAD CALIBRATION
 # =========================================================
 
 if not os.path.exists(CALIBRATION_FILE):
 
+    print()
     print("ERROR: calibration_data.npz not found.")
     print("Run calibrate.py first.")
     exit()
@@ -63,6 +65,7 @@ elif "H" in calibration.files:
 
 else:
 
+    print()
     print("ERROR: Homography matrix not found.")
     print("Available keys:", calibration.files)
     exit()
@@ -78,7 +81,7 @@ print("Homography loaded successfully.")
 
 
 # =========================================================
-# LOAD WORKSPACE IMAGE POINTS
+# LOAD WORKSPACE POINTS
 # =========================================================
 
 if "image_points" in calibration.files:
@@ -91,7 +94,8 @@ elif "image_pts" in calibration.files:
 
 else:
 
-    print("ERROR: Workspace points not found.")
+    print()
+    print("ERROR: Workspace image points not found.")
     print("Available keys:", calibration.files)
     exit()
 
@@ -102,7 +106,6 @@ workspace_points = np.array(
 ).reshape(-1, 2)
 
 
-print()
 print("Workspace points loaded:")
 print(workspace_points)
 
@@ -126,6 +129,7 @@ camera.set(
 
 if not camera.isOpened():
 
+    print()
     print("ERROR: Could not open camera.")
     exit()
 
@@ -134,13 +138,13 @@ print()
 print("Camera opened successfully.")
 print()
 print("========================================")
-print("YOLO + SHAPE + HOMOGRAPHY")
+print("YOLO + TARGET + HOMOGRAPHY + MATCHING")
 print("========================================")
 print("Press Q to quit.")
 
 
 # =========================================================
-# COLOR MASK
+# COLOR MASK FOR OBJECT SHAPE DETECTION
 # =========================================================
 
 def get_color_mask(hsv, color_name):
@@ -227,7 +231,7 @@ def get_color_mask(hsv, color_name):
 
 
 # =========================================================
-# SHAPE + CENTROID
+# SHAPE + CENTROID FOR YOLO OBJECT
 # =========================================================
 
 def detect_shape_and_centroid(
@@ -240,7 +244,6 @@ def detect_shape_and_centroid(
 ):
 
     height, width = frame.shape[:2]
-
 
     x1 = max(0, x1)
     y1 = max(0, y1)
@@ -333,7 +336,6 @@ def detect_shape_and_centroid(
 
     epsilon = 0.04 * perimeter
 
-
     approx = cv2.approxPolyDP(
         contour,
         epsilon,
@@ -403,153 +405,402 @@ def detect_shape_and_centroid(
 
 
 # =========================================================
+# DETECT BLUE TARGET
+# =========================================================
+
+def detect_blue_target(frame):
+
+    hsv = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2HSV
+    )
+
+
+    # -----------------------------------------------------
+    # LIGHT BLUE / CYAN TARGET
+    #
+    # The target in your current setup is light blue/cyan.
+    # This is intentionally different from the dark-blue
+    # object threshold used by YOLO/object processing.
+    # -----------------------------------------------------
+
+    lower_target = np.array(
+        [80, 20, 150]
+    )
+
+    upper_target = np.array(
+        [110, 200, 255]
+    )
+
+
+    mask = cv2.inRange(
+        hsv,
+        lower_target,
+        upper_target
+    )
+
+
+    # -----------------------------------------------------
+    # CLEAN MASK
+    # -----------------------------------------------------
+
+    kernel = np.ones(
+        (7, 7),
+        np.uint8
+    )
+
+
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        kernel
+    )
+
+
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        kernel
+    )
+
+
+    # -----------------------------------------------------
+    # FIND CONTOURS
+    # -----------------------------------------------------
+
+    contours, _ = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+
+    candidates = []
+
+
+    for contour in contours:
+
+        area = cv2.contourArea(
+            contour
+        )
+
+
+        # Ignore tiny regions
+
+        if area < 1000:
+
+            continue
+
+
+        x, y, w, h = cv2.boundingRect(
+            contour
+        )
+
+
+        if w <= 0 or h <= 0:
+
+            continue
+
+
+        aspect_ratio = w / float(h)
+
+
+        # Target should be approximately square/rectangular
+
+        if 0.65 <= aspect_ratio <= 1.35:
+
+            candidates.append(
+                (
+                    area,
+                    contour,
+                    x,
+                    y,
+                    w,
+                    h
+                )
+            )
+
+
+    # -----------------------------------------------------
+    # NO TARGET FOUND
+    # -----------------------------------------------------
+
+    if len(candidates) == 0:
+
+        return None
+
+
+    # -----------------------------------------------------
+    # SELECT LARGEST VALID TARGET
+    # -----------------------------------------------------
+
+    candidates.sort(
+        key=lambda item: item[0],
+        reverse=True
+    )
+
+
+    area, contour, x, y, w, h = candidates[0]
+
+
+    # -----------------------------------------------------
+    # TARGET CENTROID
+    # -----------------------------------------------------
+
+    moments = cv2.moments(
+        contour
+    )
+
+
+    if moments["m00"] == 0:
+
+        cx = x + w // 2
+        cy = y + h // 2
+
+    else:
+
+        cx = int(
+            moments["m10"]
+            / moments["m00"]
+        )
+
+        cy = int(
+            moments["m01"]
+            / moments["m00"]
+        )
+
+
+    return {
+        "cx": cx,
+        "cy": cy,
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "area": area,
+        "contour": contour
+    }
+
+
+# =========================================================
+# PIXEL → WORLD COORDINATES
+# =========================================================
+
+def pixel_to_world(cx, cy):
+
+    pixel_point = np.array(
+        [
+            [
+                [
+                    float(cx),
+                    float(cy)
+                ]
+            ]
+        ],
+        dtype=np.float32
+    )
+
+
+    world_point = cv2.perspectiveTransform(
+        pixel_point,
+        H
+    )
+
+
+    world_x = float(
+        world_point[0][0][0]
+    )
+
+    world_y = float(
+        world_point[0][0][1]
+    )
+
+
+    return world_x, world_y
+
+
+# =========================================================
 # DRAW INFORMATION PANEL
 # =========================================================
 
-def draw_panel(panel, detections):
-
-    # Background
+def draw_panel(
+    panel,
+    detections,
+    blue_target
+):
 
     panel[:] = 35
 
 
-    # Title
+    # =====================================================
+    # TITLE
+    # =====================================================
 
     cv2.putText(
         panel,
         "OBJECT DETECTIONS",
-        (20, 35),
+        (20, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.65,
         (255, 255, 255),
         2
     )
 
 
-    # Separator
-
     cv2.line(
         panel,
-        (15, 50),
-        (PANEL_WIDTH - 15, 50),
+        (15, 47),
+        (PANEL_WIDTH - 15, 47),
         (150, 150, 150),
         1
     )
 
 
-    if len(detections) == 0:
+    # =====================================================
+    # OBJECT INFORMATION
+    # =====================================================
 
-        cv2.putText(
-            panel,
-            "No objects detected",
-            (20, 90),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (220, 220, 220),
-            1
-        )
-
-        return
-
-
-    y = 85
+    y = 78
 
 
     for detection in detections:
 
         color = detection["color"]
+
         confidence = detection["confidence"]
+
         shape = detection["shape"]
+
         cx = detection["cx"]
+
         cy = detection["cy"]
+
         world_x = detection["world_x"]
+
         world_y = detection["world_y"]
-
-
-        # -------------------------------------------------
-        # Object heading
-        # -------------------------------------------------
-
-        heading = (
-            f"{color}   {confidence:.2f}"
-        )
 
 
         cv2.putText(
             panel,
-            heading,
+            f"{color}  {confidence:.2f}",
             (20, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.58,
             (255, 255, 255),
             2
         )
 
 
-        # Shape
-
         cv2.putText(
             panel,
             f"Shape: {shape}",
-            (20, y + 25),
+            (20, y + 21),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.43,
             (220, 220, 220),
             1
         )
 
-
-        # Centroid
 
         cv2.putText(
             panel,
-            f"Centroid: ({cx}, {cy})",
-            (20, y + 47),
+            f"Center: ({cx}, {cy})",
+            (20, y + 41),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.43,
             (220, 220, 220),
             1
         )
 
-
-        # X
 
         cv2.putText(
             panel,
             f"X: {world_x:.1f} mm",
-            (20, y + 69),
+            (20, y + 61),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.43,
             (220, 220, 220),
             1
         )
 
-
-        # Y
 
         cv2.putText(
             panel,
             f"Y: {world_y:.1f} mm",
-            (20, y + 91),
+            (20, y + 81),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.43,
             (220, 220, 220),
             1
         )
 
 
-        # Separator
-
         cv2.line(
             panel,
-            (15, y + 110),
-            (PANEL_WIDTH - 15, y + 110),
-            (90, 90, 90),
+            (15, y + 96),
+            (PANEL_WIDTH - 15, y + 96),
+            (80, 80, 80),
             1
         )
 
 
-        y += 130
+        y += 108
+
+
+    # =====================================================
+    # TARGET SECTION
+    # =====================================================
+
+    target_y = 410
+
+
+    cv2.putText(
+        panel,
+        "BLUE TARGET",
+        (20, target_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.58,
+        (255, 255, 255),
+        2
+    )
+
+
+    if blue_target is None:
+
+        cv2.putText(
+            panel,
+            "Target not detected",
+            (20, target_y + 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (200, 200, 200),
+            1
+        )
+
+    else:
+
+        target_x = blue_target["world_x"]
+        target_y_world = blue_target["world_y"]
+
+        cv2.putText(
+            panel,
+            f"X: {target_x:.1f} mm",
+            (20, target_y + 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (220, 220, 220),
+            1
+        )
+
+        cv2.putText(
+            panel,
+            f"Y: {target_y_world:.1f} mm",
+            (20, target_y + 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (220, 220, 220),
+            1
+        )
 
 
 # =========================================================
@@ -568,7 +819,7 @@ while True:
 
 
     # =====================================================
-    # YOLO DETECTION
+    # YOLO OBJECT DETECTION
     # =====================================================
 
     results = model(
@@ -581,15 +832,11 @@ while True:
     result = results[0]
 
 
-    # =====================================================
-    # DISPLAY FRAME
-    # =====================================================
-
     display_frame = frame.copy()
 
 
     # =====================================================
-    # DRAW CURRENT CALIBRATED WORKSPACE
+    # DRAW CALIBRATED WORKSPACE
     # =====================================================
 
     cv2.polylines(
@@ -602,23 +849,19 @@ while True:
 
 
     # =====================================================
-    # STORE DETECTIONS
+    # DETECTIONS LIST
     # =====================================================
 
     detections = []
 
 
     # =====================================================
-    # PROCESS YOLO BOXES
+    # PROCESS YOLO OBJECTS
     # =====================================================
 
     if result.boxes is not None:
 
         for box in result.boxes:
-
-            # -------------------------------------------------
-            # Bounding box
-            # -------------------------------------------------
 
             x1, y1, x2, y2 = (
                 box.xyxy[0]
@@ -635,7 +878,7 @@ while True:
 
 
             # -------------------------------------------------
-            # Class
+            # CLASS
             # -------------------------------------------------
 
             class_id = int(
@@ -649,7 +892,7 @@ while True:
 
 
             # -------------------------------------------------
-            # Confidence
+            # CONFIDENCE
             # -------------------------------------------------
 
             confidence = float(
@@ -658,7 +901,7 @@ while True:
 
 
             # -------------------------------------------------
-            # Shape + centroid
+            # SHAPE + CENTROID
             # -------------------------------------------------
 
             shape, centroid = (
@@ -674,7 +917,7 @@ while True:
 
 
             # -------------------------------------------------
-            # Fallback centroid
+            # FALLBACK CENTROID
             # -------------------------------------------------
 
             if centroid is None:
@@ -692,41 +935,21 @@ while True:
                 cx, cy = centroid
 
 
-            # =================================================
+            # -------------------------------------------------
             # HOMOGRAPHY
-            # =================================================
+            # -------------------------------------------------
 
-            pixel_point = np.array(
-                [
-                    [
-                        [
-                            float(cx),
-                            float(cy)
-                        ]
-                    ]
-                ],
-                dtype=np.float32
+            world_x, world_y = (
+                pixel_to_world(
+                    cx,
+                    cy
+                )
             )
 
 
-            world_point = cv2.perspectiveTransform(
-                pixel_point,
-                H
-            )
-
-
-            world_x = float(
-                world_point[0][0][0]
-            )
-
-            world_y = float(
-                world_point[0][0][1]
-            )
-
-
-            # =================================================
-            # SAVE DETECTION
-            # =================================================
+            # -------------------------------------------------
+            # STORE DETECTION
+            # -------------------------------------------------
 
             detections.append(
                 {
@@ -741,9 +964,9 @@ while True:
             )
 
 
-            # =================================================
-            # DRAW BOUNDING BOX
-            # =================================================
+            # -------------------------------------------------
+            # DRAW YOLO BOX
+            # -------------------------------------------------
 
             cv2.rectangle(
                 display_frame,
@@ -754,9 +977,9 @@ while True:
             )
 
 
-            # =================================================
+            # -------------------------------------------------
             # DRAW CENTROID
-            # =================================================
+            # -------------------------------------------------
 
             cv2.circle(
                 display_frame,
@@ -768,7 +991,90 @@ while True:
 
 
     # =====================================================
-    # CREATE INFORMATION PANEL
+    # DETECT BLUE TARGET
+    # =====================================================
+
+    blue_target = detect_blue_target(
+        frame
+    )
+
+
+    # =====================================================
+    # PROCESS BLUE TARGET
+    # =====================================================
+
+    if blue_target is not None:
+
+        target_cx = blue_target["cx"]
+        target_cy = blue_target["cy"]
+
+
+        target_world_x, target_world_y = (
+            pixel_to_world(
+                target_cx,
+                target_cy
+            )
+        )
+
+
+        blue_target["world_x"] = (
+            target_world_x
+        )
+
+        blue_target["world_y"] = (
+            target_world_y
+        )
+
+
+        # -------------------------------------------------
+        # DRAW TARGET BOUNDING RECTANGLE
+        # -------------------------------------------------
+
+        tx = blue_target["x"]
+        ty = blue_target["y"]
+        tw = blue_target["w"]
+        th = blue_target["h"]
+
+
+        cv2.rectangle(
+            display_frame,
+            (tx, ty),
+            (tx + tw, ty + th),
+            (0, 255, 255),
+            3
+        )
+
+
+        # -------------------------------------------------
+        # DRAW TARGET CENTROID
+        # -------------------------------------------------
+
+        cv2.circle(
+            display_frame,
+            (target_cx, target_cy),
+            7,
+            (0, 255, 255),
+            -1
+        )
+
+
+        # -------------------------------------------------
+        # TARGET LABEL
+        # -------------------------------------------------
+
+        cv2.putText(
+            display_frame,
+            "BLUE TARGET",
+            (tx, max(20, ty - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2
+        )
+
+
+    # =====================================================
+    # DRAW PANEL
     # =====================================================
 
     panel = np.zeros(
@@ -783,7 +1089,8 @@ while True:
 
     draw_panel(
         panel,
-        detections
+        detections,
+        blue_target
     )
 
 
@@ -804,29 +1111,94 @@ while True:
     # =====================================================
 
     cv2.imshow(
-        "YOLO + Shape + Homography",
+        "YOLO + Target + Homography + Matching",
         combined
     )
 
 
     # =====================================================
-    # TERMINAL OUTPUT
+    # TERMINAL MATCHING OUTPUT
     # =====================================================
+
+    # Find BLUE object
+
+    blue_object = None
+
 
     for detection in detections:
 
+        if detection["color"] == "BLUE":
+
+            blue_object = detection
+
+            break
+
+
+    # -----------------------------------------------------
+    # PRINT MATCHING INFORMATION
+    # -----------------------------------------------------
+
+    if blue_object is not None and blue_target is not None:
+
+        print()
+        print("========================================")
+        print("COLOR MATCHING")
+        print("========================================")
+
         print(
-            f"{detection['color']} | "
-            f"confidence="
-            f"{detection['confidence']:.2f} | "
-            f"shape="
-            f"{detection['shape']} | "
-            f"centroid="
-            f"({detection['cx']},"
-            f"{detection['cy']}) | "
-            f"world="
-            f"({detection['world_x']:.1f}, "
-            f"{detection['world_y']:.1f}) mm"
+            "BLUE OBJECT → BLUE TARGET"
+        )
+
+        print()
+
+        print(
+            f"Pick position:"
+        )
+
+        print(
+            f"X = "
+            f"{blue_object['world_x']:.1f} mm"
+        )
+
+        print(
+            f"Y = "
+            f"{blue_object['world_y']:.1f} mm"
+        )
+
+        print()
+
+        print(
+            f"Place position:"
+        )
+
+        print(
+            f"X = "
+            f"{blue_target['world_x']:.1f} mm"
+        )
+
+        print(
+            f"Y = "
+            f"{blue_target['world_y']:.1f} mm"
+        )
+
+        print(
+            "========================================"
+        )
+
+
+    elif blue_object is not None:
+
+        print(
+            "BLUE OBJECT detected, "
+            "but BLUE TARGET not detected."
+        )
+
+
+    elif blue_target is not None:
+
+        print(
+            "BLUE TARGET detected, "
+            "but BLUE OBJECT not detected."
         )
 
 
@@ -853,5 +1225,6 @@ cv2.destroyAllWindows()
 
 print()
 print("========================================")
-print("YOLO + SHAPE + HOMOGRAPHY FINISHED")
+print("YOLO + TARGET + HOMOGRAPHY + MATCHING")
+print("FINISHED")
 print("========================================")
